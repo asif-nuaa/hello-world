@@ -123,7 +123,8 @@ trajectorydup = trajectorydup.loc[ (res.loc[ trajectorydup.Transportation_Mode, 
 trajectorydup.to_csv(os.path.join(path,r'user141.csv'),index=False)
 
 # In[Segmentation]
-trajectorydup = trajectorydup
+
+#trajectorydup = trajectorydup
 #trajectory = dfAllTrajectorires.dropna()
 #trajectory = trajectory [trajectory['Transportation_Mode'] in ('taxi','bike','walk','bus','train')]
 #trajectory = trajectory.dropna() # dropna is a must
@@ -133,6 +134,8 @@ trajectorydup['date_time'] = pd.to_datetime(trajectorydup['date_time'])
 s = trajectory['Transportation_Mode'].ne(trajectory['Transportation_Mode'].shift()).cumsum().rename('segment_id')
 
 grp = trajectorydup.groupby(['userid','trip_id','Transportation_Mode',s])
+grp.apply(lambda x: x['velocity'].cov(x['acceleration']))
+#grp['cova'] = grp['velocity'].cov(grp['acceleration'])
 trajectorydup = grp.filter(lambda x: len(x)>3) # filter all groups whose length is greater than 3
 
 #get top1 and top2 values
@@ -148,8 +151,29 @@ f3.__name__ = 'Top_3'
 f4 = lambda x: len(x[x>10]) # count the frequency of bearing greater than threshold value
 f4.__name__ = 'Frequency'
 
-d = {'date_time':['first','last', 'count'], 'acceleration':['mean', f1, f2, f3,'count'], 'velocity':[f1, f2, f3, 'sum' ,'count'], 'bearing':['sum', f1, f2, f3, f4], 'bearing_rate':'sum','rate_bearing_rate':'mean', 'Vincenty_distance':'sum'}
+f5 = lambda x: len(x[x<3.4]) # count the stop points with velocity less than threshold value 3.4
+f5.__name__ = 'stop_frequency'
 
+f6 = lambda x: len(x[x>0.2]) # count the points with velocity greater than threshold value 0.2
+f6.__name__ = 'frequency'
+
+f7 = lambda x: len(x[x>0.25]) # count the points with accelration greater than threshold value 0.25
+f7.__name__ = 'frequency'
+
+f8 = lambda x: x.quantile(0.85)
+f8.__name__ = '85_percentile'
+
+d = {'date_time':['first','last', 'count'], 
+     'acceleration':['mean', f1, f2, f3,'count', f8, 'median', 'min'], 
+     'velocity':[f1, f2, f3, f5, 'sum' ,'count', f8, 'median', 'min'], 
+     'velocity_rate':f6,
+     'acc_rate':f7,
+     'bearing':['sum', f1, f2, f3, f4], 
+     'bearing_rate':'sum',
+     'rate_bearing_rate':'mean', 
+     'Vincenty_distance':'sum'}
+
+grp = trajectorydup.groupby(['userid','trip_id','Transportation_Mode',s])
 df1 = trajectorydup.groupby(['userid','trip_id','Transportation_Mode',s], sort=False).agg(d)
 
 #flatenning MultiIndex in columns
@@ -157,18 +181,27 @@ df1.columns = df1.columns.map('_'.join)
 #MultiIndex in index to columns
 #df1 = df1.reset_index(level=2, drop=False).reset_index()
 df1 = df1.reset_index()
-
+df1 = df1.rename(columns={'velocity_stop_frequency' : 'stop_points'})
+df1 = df1.rename(columns={'velocity_rate_frequency' : 'velocity_change_pts'})
+df1 = df1.rename(columns={'acc_rate_frequency' : 'acc_change_pts'})
 df1 = df1.where(df1['Transportation_Mode'].isin(['walk','car','bus','taxi','bike'])).dropna() # only consider the tranportation modes given in the list
 df1['Transportation_Mode'].replace('taxi', 'car',inplace=True) # replace taxi segments with car
 df1['time_delta'] = (df1.date_time_first - df1.date_time_last).dt.seconds
 df1['mean_velocity'] = df1['Vincenty_distance_sum'] / df1['time_delta']
+df1['stop_rate'] = df1['stop_points']/df1['Vincenty_distance_sum'] # no of stop points in a segment per unit distance
+df1['velocity_changerate'] = df1['velocity_change_pts']/df1['Vincenty_distance_sum'] # no of pts changing velocity per unit distance
+df1['acc_changerate'] = df1['acc_change_pts']/df1['Vincenty_distance_sum'] # no of pts changing acceleration per unit distance
+#df1['covariance_velocity_acceleration'] = grp['velocity'].cov(grp['acceleration'])
 
-
+df_cv = pd.DataFrame()
+df_cv['Covariance'] = grp.apply(lambda x: x['velocity'].cov(x['acceleration']))
+df_cv = df_cv.reset_index()
+df1 = pd.merge(df1, df_cv, how='outer', on=['userid','trip_id','Transportation_Mode','segment_id'])
 # In[write segments dataframe to disk file]
 
 path = os.getcwd()+'\\singleuseranalysis'
 #trajectory.to_csv(path,'user98a.csv')
-df1.to_csv(os.path.join(path,r'user41Segments.csv'),index=False)
+df1.to_csv(os.path.join(path,r'user141Segments.csv'),index=False)
 
 
 # In[smoothing track]
@@ -196,3 +229,58 @@ m2 = (df.Vincenty_distance.values < df.Transportation_Mode.map(res[0.95]))
 
 df = df[m1 & m2]
 #print (df)  
+
+# In[]
+
+
+
+
+
+
+
+
+
+
+
+
+
+df_cv = pd.DataFrame()
+df_cv['Covariance'] = grp.apply(lambda x: x['velocity'].cov(x['acceleration']))
+df_cv = df_cv.reset_index()
+#ddf1['cov'] = df_cv['Covariance']
+#df1.set_index(['userid','trip_id','Transportation_Mode','segment_id'])
+#df_cv.set_index(['userid','trip_id','Transportation_Mode','segment_id'])
+
+df1 = pd.merge(df1, df_cv, how='outer', on=['userid','trip_id','Transportation_Mode','segment_id'])
+#result = df1.join(df_cv, rsuffix='_y')
+
+# In[]
+
+df1.to_csv(os.path.join(path,r'user141Covariance.csv'),index=False)
+
+# In[Deleting points outside Beijing city]
+df_beijing = trajectory.copy()
+
+from shapely import geometry
+import geopandas as gpd
+#import pandas as pd
+
+#file = r'C:\folder\user141.csv'
+crs = {'init': 'epsg:4326'}
+
+#Create a geoseries holding the single polygon. Coordinates in counter-clockwise order
+pointList = [(39.77750000, 116.17944444),(39.77750000, 116.58888889),(40.04722222, 116.58888889),(40.04722222, 116.17944444)]
+poly = geometry.Polygon(pointList)
+spoly = gpd.GeoSeries([poly],crs=crs)
+
+#Create geodataframe of points
+dfcsv = df_beijing
+geometry = [geometry.Point(xy) for xy in zip(dfcsv.lat, dfcsv.long)]
+dfpoints = gpd.GeoDataFrame(dfcsv, crs=crs, geometry=geometry)
+
+#Create a subset dataframe of points within the polygon
+subset = dfpoints[dfpoints.within(spoly.geometry.iloc[0])]
+print('Number of points within polygon: ', subset.shape[0])
+# In[write beijing dataframe to csv]
+#Number of points within polygon:  58772
+subset.to_csv(os.path.join(path,r'user141Beijing.csv'),index=False)
