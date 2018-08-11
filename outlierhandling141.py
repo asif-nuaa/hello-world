@@ -5,6 +5,7 @@ import os
 import glob
 import pandas as pd
 from geopy.distance import vincenty
+import bisect
 
 import matplotlib.pyplot as plt
 
@@ -38,6 +39,7 @@ trajectory["date_time"] = pd.to_datetime(trajectory["date"] + " " +trajectory["t
 trajectory['lat'] = pd.to_numeric(trajectory['lat'], errors='coerce') # lat is object, so convert this into float
 trajectory.dropna(subset = ['lat', 'long', 'date','time'], inplace = True)
 print('userid',userid)
+
 # Reading corresponding label file
 labelFile = "labels"+userid+".txt"
 label_data = pd.read_table(labelFile)
@@ -52,9 +54,40 @@ transportation_mode = start['Transportation_Mode'].loc[(start['Start_Time'] < st
 trajectory = pd.concat((trajectory, transportation_mode), axis=1) # add transportation_mode column in trajectory dataframe
 trajectory.dropna(inplace=True)
 
+
+
+
+# In[Deleting points outside Beijing city]
+#df_beijing = trajectory.copy()
+
+from shapely import geometry
+import geopandas as gpd
+#import pandas as pd
+
+#file = r'C:\folder\user141.csv'
+crs = {'init': 'epsg:4326'}
+
+bottomLeft = (39.77750000, 116.17944444)
+bottomRight = (39.77750000, 116.58888889)
+topLeft = (40.04722222, 116.58888889)
+topRight = (40.04722222, 116.17944444)
+
+#Create a geoseries holding the single polygon. Coordinates in counter-clockwise order
+pointList = [bottomLeft, bottomRight, topLeft, topRight]
+poly = geometry.Polygon(pointList)
+spoly = gpd.GeoSeries([poly],crs=crs)
+
+#Create geodataframe of points
+dfcsv = trajectory
+geometry = [geometry.Point(xy) for xy in zip(dfcsv.lat, dfcsv.long)]
+dfpoints = gpd.GeoDataFrame(dfcsv, crs=crs, geometry=geometry)
+
+#Create a subset dataframe of points within the polygon
+trajectory = dfpoints[dfpoints.within(spoly.geometry.iloc[0])]
+print('Number of points within polygon: ', trajectory.shape[0])
+
 path = os.getcwd()+'\\singleuseranalysis'
 trajectory.to_csv(os.path.join(path,r'user141join.csv'),index=False)
-
 # In[]
 
 plt.rcParams['axes.xmargin'] = 0.1
@@ -69,9 +102,12 @@ plt.rcParams['axes.ymargin'] = 0.1
 #plt.plot(trajectory['long'].values, trajectory['lat'].values)
 #plt.plot(trajectory['long'].values[::150], trajectory['lat'].values[::150], 'ro');
 
+# In[Grid Representation of a region, Identifying Row and Column of a GPS point]
 
-
-
+cols = np.linspace(bottomLeft[1], bottomRight[1], num=18)
+rows = np.linspace(bottomLeft[0], topLeft[0], num=15)
+trajectory['col'] = np.searchsorted(cols, trajectory['long'])
+trajectory['row'] = np.searchsorted(rows, trajectory['lat'])
 
 # In[trajectory duplicate]
 trajectorydup = trajectory.copy()
@@ -82,10 +118,11 @@ trajectorydup = trajectory.copy()
 trajectorydup['time_delta'] = (trajectorydup.date_time - trajectorydup.groupby(['userid']).date_time.shift(1)).dt.seconds.shift(-1) # currently grouped on userid, later group on trip id when trips are identified                        
 trajectorydup = trajectorydup.where(trajectorydup['time_delta'] > 0) # remove all points whose date-time value is not is oreder, or next point timestemp is less than previous timestamp
 trajectorydup.dropna(inplace=True)
-
+print ('1- Length of trajectorydup = ', len(trajectorydup))
 ################## divide a track into trip based on threshold value of time_delta > 20 minutes    ####################    
 trajectorydup['trip_id'] = (tripid+(trajectorydup['time_delta'] > 1200).cumsum()).shift() 
 trajectorydup.dropna(inplace=True)
+print ('2- Length of trajectorydup = ', len(trajectorydup))
 #grp = trajectorydup.groupby(['userid','trip_id','Transportation_Mode'])
 #trajectorydup['segmentid'] = grp['Transportation_Mode'].apply(lambda x: x.ne(x.shift(1)).cumsum())
 #trajectorydup['segmentid'] = trajectorydup.groupby([userid,tripid]).Transportation_Mode.apply(lambda x: x.ne(x.shift(1)).cumsum())
@@ -112,12 +149,15 @@ trajectorydup['x'] = np.cos(trajectorydup['latr']) * np.sin(trajectorydup.groupb
 trajectorydup['bearing'] = np.degrees(np.arctan2(trajectorydup['y'],trajectorydup['x']))
 trajectorydup['bearing_rate'] = trajectorydup.groupby(['trip_id']).bearing.shift(-1) - trajectorydup['bearing']        
 trajectorydup['rate_bearing_rate'] = (trajectorydup.groupby(['trip_id']).bearing_rate.shift(-1) - trajectorydup['bearing_rate'])/trajectorydup['time_delta']
-trajectorydup.drop(['longr','latr','y','x','tep','ht','altitude'], inplace=True ,axis=1) # drop temporary columns longr, latr, y, x
+trajectorydup.drop(['longr','latr','y','x','tep','ht','altitude','geometry'], inplace=True ,axis=1) # drop temporary columns longr, latr, y, x
 trajectorydup.dropna(inplace=True)
+
+print ('3- Length of trajectorydup = ', len(trajectorydup))
 # remove autliers
 res = trajectorydup.groupby("Transportation_Mode")["velocity"].quantile([0.05, 0.95]).unstack(level=1) # only velocity rows need to be deleted, 
 trajectorydup = trajectorydup.loc[ (res.loc[ trajectorydup.Transportation_Mode, 0.05].values < trajectorydup.Vincenty_distance.values) & (trajectorydup.Vincenty_distance.values < res.loc[trajectorydup.Transportation_Mode, 0.95].values) ]
 
+print ('4- Length of trajectorydup = ', len(trajectorydup))
 # In[write feature file to disk]
 
 trajectorydup.to_csv(os.path.join(path,r'user141.csv'),index=False)
@@ -128,13 +168,13 @@ trajectorydup.to_csv(os.path.join(path,r'user141.csv'),index=False)
 #trajectory = dfAllTrajectorires.dropna()
 #trajectory = trajectory [trajectory['Transportation_Mode'] in ('taxi','bike','walk','bus','train')]
 #trajectory = trajectory.dropna() # dropna is a must
-trajectorydup['date_time'] = pd.to_datetime(trajectorydup['date_time'])
+#trajectorydup['date_time'] = pd.to_datetime(trajectorydup['date_time'])
 
 #create helper column for consecutive segment
-s = trajectory['Transportation_Mode'].ne(trajectory['Transportation_Mode'].shift()).cumsum().rename('segment_id')
+#s = trajectorydup['Transportation_Mode'].ne(trajectorydup['Transportation_Mode'].shift()).cumsum().rename('segment_id')
 
-grp = trajectorydup.groupby(['userid','trip_id','Transportation_Mode',s])
-grp.apply(lambda x: x['velocity'].cov(x['acceleration']))
+grp = trajectorydup.groupby(['userid','trip_id','Transportation_Mode','segmentid'])
+#grp.apply(lambda x: x['velocity'].cov(x['acceleration']))
 #grp['cova'] = grp['velocity'].cov(grp['acceleration'])
 trajectorydup = grp.filter(lambda x: len(x)>3) # filter all groups whose length is greater than 3
 
@@ -173,8 +213,8 @@ d = {'date_time':['first','last', 'count'],
      'rate_bearing_rate':'mean', 
      'Vincenty_distance':'sum'}
 
-grp = trajectorydup.groupby(['userid','trip_id','Transportation_Mode',s])
-df1 = trajectorydup.groupby(['userid','trip_id','Transportation_Mode',s], sort=False).agg(d)
+grp = trajectorydup.groupby(['userid','trip_id','Transportation_Mode','segmentid'])
+df1 = trajectorydup.groupby(['userid','trip_id','Transportation_Mode','segmentid'], sort=False).agg(d)
 
 #flatenning MultiIndex in columns
 df1.columns = df1.columns.map('_'.join)
@@ -191,18 +231,19 @@ df1['mean_velocity'] = df1['Vincenty_distance_sum'] / df1['time_delta']
 df1['stop_rate'] = df1['stop_points']/df1['Vincenty_distance_sum'] # no of stop points in a segment per unit distance
 df1['velocity_changerate'] = df1['velocity_change_pts']/df1['Vincenty_distance_sum'] # no of pts changing velocity per unit distance
 df1['acc_changerate'] = df1['acc_change_pts']/df1['Vincenty_distance_sum'] # no of pts changing acceleration per unit distance
-#df1['covariance_velocity_acceleration'] = grp['velocity'].cov(grp['acceleration'])
+df1['time_slice'] = df1['date_time_first'].apply( lambda x: 'T_busy' if ((x.hour>=7 and x.hour<10) or (x.hour>=16 and x.hour<21)) else 'T_idle') # Time_Slice type of the day
 
+# covariance between velocity and acceleration
 df_cv = pd.DataFrame()
 df_cv['Covariance'] = grp.apply(lambda x: x['velocity'].cov(x['acceleration']))
 df_cv = df_cv.reset_index()
-df1 = pd.merge(df1, df_cv, how='outer', on=['userid','trip_id','Transportation_Mode','segment_id'])
+df1 = pd.merge(df1, df_cv, how='inner', on=['userid','trip_id','Transportation_Mode','segmentid'])
 # In[write segments dataframe to disk file]
 
 path = os.getcwd()+'\\singleuseranalysis'
 #trajectory.to_csv(path,'user98a.csv')
 df1.to_csv(os.path.join(path,r'user141Segments.csv'),index=False)
-
+df_cv.to_csv(os.path.join(path,r'user141Covariance.csv'),index=False)
 
 # In[smoothing track]
 
@@ -231,17 +272,6 @@ df = df[m1 & m2]
 #print (df)  
 
 # In[]
-
-
-
-
-
-
-
-
-
-
-
 
 
 df_cv = pd.DataFrame()
@@ -284,3 +314,11 @@ print('Number of points within polygon: ', subset.shape[0])
 # In[write beijing dataframe to csv]
 #Number of points within polygon:  58772
 subset.to_csv(os.path.join(path,r'user141Beijing.csv'),index=False)
+
+# In[declaring timeslice]
+trajectorydup['date_time'].apply(lambda x: 'TS1' if ((x.hour>=0 and x.hour<7) or (x.hour>=19 and x.hour<24)) else \
+             'TS2' if ((x.hour>=7 and x.hour<9) or (x.hour>=16 and x.hour<19)) else 'TS3'  )
+#else 'TS2' if (x.hour>9 && x.hour<16)  else 'TS3' if (x.hour >= 16 && x.hour < 19)
+
+#trajectorydup['date_time'].apply(lambda x: 'TS1' if ((x.hour>=0 and x.hour<7) or (x.hour>=19 and x.hour<24)) else 'TS2')
+
