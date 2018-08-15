@@ -5,7 +5,6 @@ import os
 import glob
 import pandas as pd
 from geopy.distance import vincenty
-import bisect
 
 import matplotlib.pyplot as plt
 
@@ -54,7 +53,10 @@ transportation_mode = start['Transportation_Mode'].loc[(start['Start_Time'] < st
 trajectory = pd.concat((trajectory, transportation_mode), axis=1) # add transportation_mode column in trajectory dataframe
 trajectory.dropna(inplace=True)
 
+# In[Writing trajectory dataframe into csv file]
 
+path = os.getcwd()+'\\singleuseranalysis'
+trajectory.to_csv(os.path.join(path,r'user141join.csv'),index=False)
 
 
 # In[Deleting points outside Beijing city]
@@ -86,13 +88,11 @@ dfpoints = gpd.GeoDataFrame(dfcsv, crs=crs, geometry=geometry)
 trajectory = dfpoints[dfpoints.within(spoly.geometry.iloc[0])]
 print('Number of points within polygon: ', trajectory.shape[0])
 
-path = os.getcwd()+'\\singleuseranalysis'
-trajectory.to_csv(os.path.join(path,r'user141join.csv'),index=False)
 # In[]
 
 plt.rcParams['axes.xmargin'] = 0.1
 plt.rcParams['axes.ymargin'] = 0.1
-#plt.plot(trajectory['long'].values, trajectory['lat'].values)
+plt.plot(trajectory['long'].values, trajectory['lat'].values)
 
 
 #plt.plot(trajectory['long'].values, trajectory['lat'].values)
@@ -108,6 +108,11 @@ cols = np.linspace(bottomLeft[1], bottomRight[1], num=18)
 rows = np.linspace(bottomLeft[0], topLeft[0], num=15)
 trajectory['col'] = np.searchsorted(cols, trajectory['long'])
 trajectory['row'] = np.searchsorted(rows, trajectory['lat'])
+
+
+# In[Writing grid-filtered trajectory dataframe into csv file]
+path = os.getcwd()+'\\singleuseranalysis'
+trajectory.to_csv(os.path.join(path,r'user141grids.csv'),index=False)
 
 # In[trajectory duplicate]
 trajectorydup = trajectory.copy()
@@ -164,21 +169,15 @@ trajectorydup.to_csv(os.path.join(path,r'user141.csv'),index=False)
 
 # In[Segmentation]
 
-#trajectorydup = trajectorydup
-#trajectory = dfAllTrajectorires.dropna()
 #trajectory = trajectory [trajectory['Transportation_Mode'] in ('taxi','bike','walk','bus','train')]
 #trajectory = trajectory.dropna() # dropna is a must
-#trajectorydup['date_time'] = pd.to_datetime(trajectorydup['date_time'])
-
-#create helper column for consecutive segment
-#s = trajectorydup['Transportation_Mode'].ne(trajectorydup['Transportation_Mode'].shift()).cumsum().rename('segment_id')
 
 grp = trajectorydup.groupby(['userid','trip_id','Transportation_Mode','segmentid'])
 #grp.apply(lambda x: x['velocity'].cov(x['acceleration']))
 #grp['cova'] = grp['velocity'].cov(grp['acceleration'])
 trajectorydup = grp.filter(lambda x: len(x)>3) # filter all groups whose length is greater than 3
 
-#get top1 and top2 values
+#get top3 values using f1,f2 and f3
 f1 = lambda x: x.sort_values(ascending=False).iloc[0]
 f1.__name__ = 'Top_1'
 #for top2 return nan if not exist
@@ -188,27 +187,28 @@ f2.__name__ = 'Top_2'
 f3 = lambda x: x.sort_values(ascending=False).iloc[2] 
 f3.__name__ = 'Top_3'
 
-f4 = lambda x: len(x[x>10]) # count the frequency of bearing greater than threshold value
-f4.__name__ = 'Frequency'
-
-f5 = lambda x: len(x[x<3.4]) # count the stop points with velocity less than threshold value 3.4
-f5.__name__ = 'stop_frequency'
-
-f6 = lambda x: len(x[x>0.2]) # count the points with velocity greater than threshold value 0.2
-f6.__name__ = 'frequency'
-
-f7 = lambda x: len(x[x>0.25]) # count the points with accelration greater than threshold value 0.25
-f7.__name__ = 'frequency'
+def countFunc(p, op):
+    def ipf(x):
+        if op == 'greater':
+            return (x > p).sum()
+        elif op == 'less':
+            return (x < p).sum()  
+        else:
+            raise ValueError("second argument has to be greater or less only")
+    ipf.__name__ = 'Frequency'
+    return ipf
 
 f8 = lambda x: x.quantile(0.85)
 f8.__name__ = '85_percentile'
 
 d = {'date_time':['first','last', 'count'], 
+     'row':['first','last'],
+     'col':['first','last'],
      'acceleration':['mean', f1, f2, f3,'count', f8, 'median', 'min'], 
-     'velocity':[f1, f2, f3, f5, 'sum' ,'count', f8, 'median', 'min'], 
-     'velocity_rate':f6,
-     'acc_rate':f7,
-     'bearing':['sum', f1, f2, f3, f4], 
+     'velocity':[f1, f2, f3, countFunc(3.4,'less'), 'sum' ,'count', f8, 'median', 'min'], # velocity_Frequency (count stop points with velocity less than 3.4)
+     'velocity_rate': countFunc(0.2, 'greater'), # velocity_rate_Frequency (count the points with velocity greater than threshold value 0.2)
+     'acc_rate': countFunc(.25, 'greater'), # acc_rate_Frequency (count the points with accelration greater than threshold value 0.25)
+     'bearing':['sum', f1, f2, f3, countFunc(10, 'greater')], # bearing_Frequency (count the frequency of bearing greater than threshold value) 
      'bearing_rate':'sum',
      'rate_bearing_rate':'mean', 
      'Vincenty_distance':'sum'}
@@ -221,11 +221,13 @@ df1.columns = df1.columns.map('_'.join)
 #MultiIndex in index to columns
 #df1 = df1.reset_index(level=2, drop=False).reset_index()
 df1 = df1.reset_index()
-df1 = df1.rename(columns={'velocity_stop_frequency' : 'stop_points'})
-df1 = df1.rename(columns={'velocity_rate_frequency' : 'velocity_change_pts'})
-df1 = df1.rename(columns={'acc_rate_frequency' : 'acc_change_pts'})
+df1 = df1.rename(columns={'velocity_Frequency' : 'stop_points'})
+df1 = df1.rename(columns={'velocity_rate_Frequency' : 'velocity_change_pts'})
+df1 = df1.rename(columns={'acc_rate_Frequency' : 'acc_change_pts'})
+
 df1 = df1.where(df1['Transportation_Mode'].isin(['walk','car','bus','taxi','bike'])).dropna() # only consider the tranportation modes given in the list
 df1['Transportation_Mode'].replace('taxi', 'car',inplace=True) # replace taxi segments with car
+
 df1['time_delta'] = (df1.date_time_first - df1.date_time_last).dt.seconds
 df1['mean_velocity'] = df1['Vincenty_distance_sum'] / df1['time_delta']
 df1['stop_rate'] = df1['stop_points']/df1['Vincenty_distance_sum'] # no of stop points in a segment per unit distance
@@ -322,3 +324,98 @@ trajectorydup['date_time'].apply(lambda x: 'TS1' if ((x.hour>=0 and x.hour<7) or
 
 #trajectorydup['date_time'].apply(lambda x: 'TS1' if ((x.hour>=0 and x.hour<7) or (x.hour>=19 and x.hour<24)) else 'TS2')
 
+# In[probability distribution function]
+
+trajectorydup.loc[len(trajectorydup), ['Transportation_Mode','row','col']] = ['walk','-1','-1']
+trajectorydup.loc[len(trajectorydup)+1, ['Transportation_Mode','row','col']] = ['bike','-1','-1']
+trajectorydup.loc[len(trajectorydup)+2, ['Transportation_Mode','row','col']] = ['bus','-1','-1']
+trajectorydup.loc[len(trajectorydup)+3, ['Transportation_Mode','row','col']] = ['car','-1','-1']
+trajectorydup.loc[len(trajectorydup)+4, ['Transportation_Mode','row','col']] = ['train','-1','-1']
+
+#grp4 = trajectorydup.groupby(['row','col','Transportation_Mode'])
+#dfa = grp4.size().unstack()
+#dfa.reset_index()
+#dfa.fillna(value=0, inplace=True)
+
+
+# Method 2: By use of pivot_table
+dfProbability = trajectorydup.pivot_table(values='lat', index=['row','col'], aggfunc=np.count_nonzero, columns='Transportation_Mode')
+dfProbability.reset_index(inplace=True)
+#dfa['P(Walk)'] = dfa['walk']/sum(dfa[[]])
+#df['e'] = df.sum(axis=1)
+#dfProbability['Sum']= dfProbability['walk'] + dfProbability['bike'] + dfProbability['bus'] + dfProbability['car'] + dfProbability['train'] 
+dfProbability['sum'] = (dfProbability.loc[:,['bike','walk','bus','car','train','subway']]).sum(axis=1)
+dfProbability['P(walk)'] = dfProbability['walk']/dfProbability['sum']
+dfProbability['P(bike)'] = dfProbability['bike']/dfProbability['sum']
+dfProbability['P(bus)'] = dfProbability['bus']/dfProbability['sum']
+dfProbability['P(car)'] = dfProbability['car']/dfProbability['sum']
+dfProbability['P(train)'] = dfProbability['train']/dfProbability['sum']
+dfProbability['P(subway)'] = dfProbability['subway']/dfProbability['sum']
+dfProbabilityDistribution = dfProbability.loc[:,['row','col','P(walk)','P(bike)','P(bus)','P(car)','P(train)','P(subway)']]
+dfProbabilityDistribution.fillna(value=0,inplace=True)
+
+
+# In[Segmentation]
+df = trajectorydup
+
+f4 = lambda x: len(x[x>10]) # count the frequency of bearing greater than threshold value
+f4.__name__ = 'Frequency'
+
+f5 = lambda x: len(x[x<3.4]) # count the stop points with velocity less than threshold value 3.4
+f5.__name__ = 'Frequency'
+
+f6 = lambda x: len(x[x>0.2]) # count the points with velocity greater than threshold value 0.2
+f6.__name__ = 'Frequency'
+
+f7 = lambda x: len(x[x>0.25]) # count the points with accelration greater than threshold value 0.25
+f7.__name__ = 'Frequency'
+
+d = {'acceleration':['mean', 'median', 'min'], 
+     'velocity':[f5, 'sum' ,'count', 'median', 'min'], 
+     'velocity_rate':f6,
+     'acc_rate':f7,
+     'bearing':['sum', f4], 
+     'bearing_rate':'sum',     
+     'Vincenty_distance':'sum'}
+
+df1 = df.groupby(['userid','trip_id','Transportation_Mode','segmentid'], sort=False).agg(d)
+grp = df.groupby(['userid','trip_id','Transportation_Mode','segmentid'])
+#flatenning MultiIndex in columns
+df1.columns = df1.columns.map('_'.join)
+#MultiIndex in index to columns
+df1 = df1.reset_index(level=2, drop=False).reset_index()
+
+#a = grp.pipe (lambda x: x.acceleration.cov(x.velocity))
+
+
+# In[]
+    
+def f4(p, op):
+    def ipf(x):
+        if op == 'greater':
+            return (x > p).sum()
+        elif op == 'less':
+            return (x < p).sum()  
+        else:
+            raise ValueError("second argument has to be greater or less only")
+    ipf.__name__ = 'Frequency'
+    return ipf 
+
+d = {'acceleration':['mean', 'median', 'min'], 
+ 'velocity':[f4(3.4, 'less'), 'sum' ,'count', 'median', 'min'], 
+ 'velocity_rate':f4(0.2, 'greater'),
+ 'acc_rate':f4(.25, 'greater'),
+ 'bearing':['sum', f4(10, 'greater')], 
+ 'bearing_rate':'sum',     
+ 'Vincenty_distance':'sum'}
+
+df2 = df.groupby(['userid','trip_id','Transportation_Mode','segmentid'], sort=False).agg(d)
+
+#flatenning MultiIndex in columns
+df2.columns = df2.columns.map('_'.join)
+#MultiIndex in index to columns
+df2 = df2.reset_index(level=2, drop=False).reset_index()
+
+# In[]
+df1.loc[:, ['velocity_Frequency','velocity_rate_Frequency','acc_rate_Frequency','bearing_Frequency']]
+df2.loc[:, ['velocity_Frequency','velocity_rate_Frequency','acc_rate_Frequency','bearing_Frequency']]
