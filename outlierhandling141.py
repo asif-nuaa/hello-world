@@ -167,6 +167,38 @@ print ('4- Length of trajectorydup = ', len(trajectorydup))
 
 trajectorydup.to_csv(os.path.join(path,r'user141.csv'),index=False)
 
+
+# In[probability distribution function]
+
+trajectorydup.loc[len(trajectorydup), ['Transportation_Mode','row','col']] = ['walk','-1','-1']
+trajectorydup.loc[len(trajectorydup)+1, ['Transportation_Mode','row','col']] = ['bike','-1','-1']
+trajectorydup.loc[len(trajectorydup)+2, ['Transportation_Mode','row','col']] = ['bus','-1','-1']
+trajectorydup.loc[len(trajectorydup)+3, ['Transportation_Mode','row','col']] = ['car','-1','-1']
+trajectorydup.loc[len(trajectorydup)+4, ['Transportation_Mode','row','col']] = ['train','-1','-1']
+
+#grp4 = trajectorydup.groupby(['row','col','Transportation_Mode'])
+#dfa = grp4.size().unstack()
+#dfa.reset_index()
+#dfa.fillna(value=0, inplace=True)
+
+
+# Method 2: By use of pivot_table
+dfProbability = trajectorydup.pivot_table(values='lat', index=['row','col'], aggfunc=np.count_nonzero, columns='Transportation_Mode')
+dfProbability.reset_index(inplace=True)
+#dfa['P(Walk)'] = dfa['walk']/sum(dfa[[]])
+#df['e'] = df.sum(axis=1)
+#dfProbability['Sum']= dfProbability['walk'] + dfProbability['bike'] + dfProbability['bus'] + dfProbability['car'] + dfProbability['train'] 
+dfProbability['sum'] = (dfProbability.loc[:,['bike','walk','bus','car','train','subway']]).sum(axis=1)
+dfProbability['P(walk)'] = dfProbability['walk']/dfProbability['sum']
+dfProbability['P(bike)'] = dfProbability['bike']/dfProbability['sum']
+dfProbability['P(bus)'] = dfProbability['bus']/dfProbability['sum']
+dfProbability['P(car)'] = dfProbability['car']/dfProbability['sum']
+dfProbability['P(train)'] = dfProbability['train']/dfProbability['sum']
+dfProbability['P(subway)'] = dfProbability['subway']/dfProbability['sum']
+dfProbabilityDistribution = dfProbability.loc[:,['row','col','P(walk)','P(bike)','P(bus)','P(car)','P(train)','P(subway)']]
+dfProbabilityDistribution.fillna(value=0,inplace=True)
+
+
 # In[Segmentation]
 
 #trajectory = trajectory [trajectory['Transportation_Mode'] in ('taxi','bike','walk','bus','train')]
@@ -240,12 +272,21 @@ df_cv = pd.DataFrame()
 df_cv['Covariance'] = grp.apply(lambda x: x['velocity'].cov(x['acceleration']))
 df_cv = df_cv.reset_index()
 df1 = pd.merge(df1, df_cv, how='inner', on=['userid','trip_id','Transportation_Mode','segmentid'])
+
+# In[Joining df1 with Probability Distributions]
+
+a = pd.merge(df1, dfProbabilityDistribution, how='left', left_on=['row_first','col_first'], right_on=['row','col']).loc[:,['row','col','P(walk)','P(bike)','P(bus)','P(car)','P(train)','P(subway)']]
+b = pd.merge(df1, dfProbabilityDistribution, how='left', left_on=['row_last','col_last'], right_on=['row','col']).loc[:,['row','col','P(walk)','P(bike)','P(bus)','P(car)','P(train)','P(subway)']]
+df2 = (a+b)/2
+df2 = df2.loc[:,['P(walk)','P(bike)','P(bus)','P(car)','P(train)','P(subway)']]
+df3 = pd.concat([df1, df2], axis=1)
+
 # In[write segments dataframe to disk file]
 
 path = os.getcwd()+'\\singleuseranalysis'
-#trajectory.to_csv(path,'user98a.csv')
-df1.to_csv(os.path.join(path,r'user141Segments.csv'),index=False)
-df_cv.to_csv(os.path.join(path,r'user141Covariance.csv'),index=False)
+df3.to_csv(os.path.join(path,r'user141Segments.csv'),index=False)
+#df_cv.to_csv(os.path.join(path,r'user141Covariance.csv'),index=False)
+
 
 # In[smoothing track]
 
@@ -255,7 +296,7 @@ df_cv.to_csv(os.path.join(path,r'user141Covariance.csv'),index=False)
 def smoothing():
     return np.nan
 
-# In[]
+# In[test case - outlier removal outside 0.05 - 0.95 range]
 
 # method 1
 df = trajectorydup    
@@ -273,7 +314,7 @@ m2 = (df.Vincenty_distance.values < df.Transportation_Mode.map(res[0.95]))
 df = df[m1 & m2]
 #print (df)  
 
-# In[]
+# In[test case - covariance]
 
 
 df_cv = pd.DataFrame()
@@ -419,3 +460,11 @@ df2 = df2.reset_index(level=2, drop=False).reset_index()
 # In[]
 df1.loc[:, ['velocity_Frequency','velocity_rate_Frequency','acc_rate_Frequency','bearing_Frequency']]
 df2.loc[:, ['velocity_Frequency','velocity_rate_Frequency','acc_rate_Frequency','bearing_Frequency']]
+
+# In[Joining df1 with Probability Distributions]
+
+a = pd.merge(df1, dfProbabilityDistribution, how='left', left_on=['row_first','col_first'], right_on=['row','col']).loc[:,['row','col','P(walk)','P(bike)','P(bus)','P(car)','P(train)','P(subway)']]
+b = pd.merge(df1, dfProbabilityDistribution, how='left', left_on=['row_last','col_last'], right_on=['row','col']).loc[:,['row','col','P(walk)','P(bike)','P(bus)','P(car)','P(train)','P(subway)']]
+df2 = (a+b)/2
+df2 = df2.loc[:,['P(walk)','P(bike)','P(bus)','P(car)','P(train)','P(subway)']]
+df3 = pd.concat([df1, df2], axis=1)
