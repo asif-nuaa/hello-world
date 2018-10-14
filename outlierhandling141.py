@@ -18,18 +18,69 @@ lblFileList = glob.glob("*.txt")
 print (len(pltFileList))
 print (len(lblFileList))
 
-# In[Read textfile from file system and write csv backto it] - Output user141_original.csv
+# In[]
 
+#import pandas as pd
+
+def filter_gps_points(pointList, df):
+    
+    from shapely import geometry
+    import geopandas as gpd
+    crs = {'init': 'epsg:4326'}
+    
+    poly = geometry.Polygon(pointList)
+    spoly = gpd.GeoSeries([poly],crs=crs)
+
+    #Create geodataframe of points
+    dfcsv = df
+    geometry = [geometry.Point(xy) for xy in zip(dfcsv.lat, dfcsv.long)]
+    dfpoints = gpd.GeoDataFrame(dfcsv, crs=crs, geometry=geometry)
+
+#Create a subset dataframe of points within the polygon
+    df = dfpoints[dfpoints.within(spoly.geometry.iloc[0])]
+    print('Number of points within polygon: ', df.shape[0]) 
+    
+    return df
+
+def get_grid_index(pointList, col_count, row_count, long_series, lat_series):
+    
+    #cols = np.linspace(bottomLeft[1], bottomRight[1], num=18)
+    #rows = np.linspace(bottomLeft[0], topLeft[0], num=15)
+    
+    cols = np.linspace(pointList[0][1], pointList[1][1], num= col_count)
+    rows = np.linspace(pointList[0][0], pointList[2][0], num= row_count)
+    col = np.searchsorted(cols, long_series)
+    row = np.searchsorted(rows, lat_series)
+    grid_index_series = row * len(rows) + col  # 2 dimension to 1 dimension conversion, oneDindex = (row * length_of_row) + column;
+    
+    return grid_index_series
+
+
+# In[Read textfile from file system and write csv backto it] - Output user141_original.csv
+user=str(153)
 user_cols = ['lat','long','tep','ht','altitude','date','time']
 tripid=1
-filename = 'combined141.plt'
+#filename = 'combined141.plt'
+filename = 'combined'+user+'.plt'
 os.chdir(r"C:\Users\asif\Python Scripts\Combined Trajectory Reading\Combined Trajectory_Label_Geolife")
 
 userid = filename[8:][:-4] # extract first 8 characters and last four characters from string using string slicing
 trajectory = pd.read_table(filename,skiprows=6, sep=',', names=user_cols)    
 
 path = os.getcwd()+'\\singleuseranalysis'
-trajectory.to_csv(os.path.join(path,r'user141_original.csv'),index=False)
+trajectory.to_csv(os.path.join(path,r'user'+str(user)+'_original.csv'),index=False)
+
+bottomLeft = (39.77750000, 116.17944444)
+bottomRight = (39.77750000, 116.58888889)
+topLeft = (40.04722222, 116.58888889)
+topRight = (40.04722222, 116.17944444)
+
+#Create a geoseries holding the single polygon. Coordinates in counter-clockwise order
+pointList = [bottomLeft, bottomRight, topLeft, topRight]
+
+gridColumns = 18
+gridRows = 15
+
 
 # In[Join plot file with label file and write the result backinto filesystem] - Output user141join.csv
 
@@ -57,7 +108,7 @@ trajectory.dropna(inplace=True)
 
 path = os.getcwd()+'\\singleuseranalysis'
 trajectory.to_csv(os.path.join(path,r'user141join.csv'),index=False)
-
+trajectory1 = trajectory.copy()
 
 # In[Deleting points outside Beijing city]
 #df_beijing = trajectory.copy()
@@ -108,7 +159,11 @@ cols = np.linspace(bottomLeft[1], bottomRight[1], num=18)
 rows = np.linspace(bottomLeft[0], topLeft[0], num=15)
 trajectory['col'] = np.searchsorted(cols, trajectory['long'])
 trajectory['row'] = np.searchsorted(rows, trajectory['lat'])
+trajectory['grid_index'] = trajectory['row'] * len(rows) + trajectory['col']  # 2 dimension to 1 dimension conversion, oneDindex = (row * length_of_row) + column;
 
+# In[]
+
+trajectory['grid_index'] = get_grid_index(pointList, gridColumns, gridRows, trajectory['long'], trajectory['lat'])
 
 # In[Writing grid-filtered trajectory dataframe into csv file]
 path = os.getcwd()+'\\singleuseranalysis'
@@ -142,10 +197,10 @@ trajectorydup.drop(['lat_shifted','long_shifted'], axis=1, inplace=True) # drop 
 
 # velocity Vi = Li / time_deltai
 trajectorydup['velocity'] = trajectorydup['Vincenty_distance'] / trajectorydup['time_delta']
-trajectorydup['acceleration'] = (-trajectorydup['velocity'] + trajectorydup.groupby(['trip_id']).velocity.shift(-1))/trajectorydup['time_delta'] # later on group on trip id
-trajectorydup['velocity_rate'] = (-trajectorydup['velocity'] + trajectorydup.groupby(['trip_id']).velocity.shift(-1))/trajectorydup['velocity'] # Velcocity Rate - later on group on trip id
-trajectorydup['jerk'] = (-trajectorydup['acceleration'] + trajectorydup.groupby(['trip_id']).acceleration.shift(-1))/trajectorydup['time_delta'] # later on group on trip id
-trajectorydup['acc_rate'] = (-trajectorydup['acceleration'] + trajectorydup.groupby(['trip_id']).acceleration.shift(-1))/trajectorydup['acceleration'] # Acceleration Rate
+trajectorydup['acceleration'] = (-trajectorydup['velocity'] + trajectorydup.groupby(['trip_id']).velocity.shift(-1))/trajectorydup['time_delta'] 
+trajectorydup['velocity_rate'] = (-trajectorydup['velocity'] + trajectorydup.groupby(['trip_id']).velocity.shift(-1))/trajectorydup['velocity'] 
+trajectorydup['jerk'] = (-trajectorydup['acceleration'] + trajectorydup.groupby(['trip_id']).acceleration.shift(-1))/trajectorydup['time_delta'] 
+trajectorydup['acc_rate'] = (-trajectorydup['acceleration'] + trajectorydup.groupby(['trip_id']).acceleration.shift(-1))/trajectorydup['acceleration'] 
 
 trajectorydup['longr']= np.radians(trajectorydup['long'])
 trajectorydup['latr'] = np.radians(trajectorydup['lat'])
@@ -158,7 +213,11 @@ trajectorydup.drop(['longr','latr','y','x','tep','ht','altitude','geometry'], in
 trajectorydup.dropna(inplace=True)
 
 print ('3- Length of trajectorydup = ', len(trajectorydup))
-# remove autliers
+
+# Replace all taxi points with car
+trajectorydup['Transportation_Mode'].replace('taxi', 'car',inplace=True) # replace taxi points with car
+
+# Removing outlier points
 res = trajectorydup.groupby("Transportation_Mode")["velocity"].quantile([0.05, 0.95]).unstack(level=1) # only velocity rows need to be deleted, 
 trajectorydup = trajectorydup.loc[ (res.loc[ trajectorydup.Transportation_Mode, 0.05].values < trajectorydup.Vincenty_distance.values) & (trajectorydup.Vincenty_distance.values < res.loc[trajectorydup.Transportation_Mode, 0.95].values) ]
 
@@ -170,6 +229,7 @@ trajectorydup.to_csv(os.path.join(path,r'user141.csv'),index=False)
 
 # In[probability distribution function]
 
+# Adding 5 dummy rows, one for each transportation mode
 trajectorydup.loc[len(trajectorydup), ['Transportation_Mode','row','col']] = ['walk','-1','-1']
 trajectorydup.loc[len(trajectorydup)+1, ['Transportation_Mode','row','col']] = ['bike','-1','-1']
 trajectorydup.loc[len(trajectorydup)+2, ['Transportation_Mode','row','col']] = ['bus','-1','-1']
@@ -236,6 +296,7 @@ f8.__name__ = '85_percentile'
 d = {'date_time':['first','last', 'count'], 
      'row':['first','last'],
      'col':['first','last'],
+     'grid_index':['first','last'],
      'acceleration':['mean', f1, f2, f3,'count', f8, 'median', 'min'], 
      'velocity':[f1, f2, f3, countFunc(3.4,'less'), 'sum' ,'count', f8, 'median', 'min'], # velocity_Frequency (count stop points with velocity less than 3.4)
      'velocity_rate': countFunc(0.2, 'greater'), # velocity_rate_Frequency (count the points with velocity greater than threshold value 0.2)
@@ -258,7 +319,7 @@ df1 = df1.rename(columns={'velocity_rate_Frequency' : 'velocity_change_pts'})
 df1 = df1.rename(columns={'acc_rate_Frequency' : 'acc_change_pts'})
 
 df1 = df1.where(df1['Transportation_Mode'].isin(['walk','car','bus','taxi','bike'])).dropna() # only consider the tranportation modes given in the list
-df1['Transportation_Mode'].replace('taxi', 'car',inplace=True) # replace taxi segments with car
+#df1['Transportation_Mode'].replace('taxi', 'car',inplace=True) # replace taxi segments with car
 
 df1['time_delta'] = (df1.date_time_first - df1.date_time_last).dt.seconds
 df1['mean_velocity'] = df1['Vincenty_distance_sum'] / df1['time_delta']
@@ -287,6 +348,21 @@ path = os.getcwd()+'\\singleuseranalysis'
 df3.to_csv(os.path.join(path,r'user141Segments.csv'),index=False)
 #df_cv.to_csv(os.path.join(path,r'user141Covariance.csv'),index=False)
 
+
+# In[ *************      TEST CODE AREA ***********************]
+
+# *************      TEST CODE AREA ***********************
+# *************      TEST CODE AREA ***********************
+# *************      TEST CODE AREA ***********************
+# *************      TEST CODE AREA ***********************
+
+# ALL CODE BELOW THIS PORTION IS TEST CODE. ONCE VERIFIED, WILL BE PART OF ACTUAL CODE IN UPPER PORTION
+
+# *************      TEST CODE AREA ***********************
+# *************      TEST CODE AREA ***********************
+# *************      TEST CODE AREA ***********************
+# *************      TEST CODE AREA ***********************
+# *************      TEST CODE AREA ***********************
 
 # In[smoothing track]
 
